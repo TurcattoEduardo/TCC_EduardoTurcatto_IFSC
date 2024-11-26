@@ -89,7 +89,7 @@ void Enc_Canal_A_Counter();
 void Enc_Canal_B_Counter();
 void IRAM_ATTR Enc_Interrupt();
 
-//////////////////////////// SETUP ///////////////////////////y
+//////////////////////////// SETUP ///////////////////////////
 void setup() {
     Serial.begin(115200);
 
