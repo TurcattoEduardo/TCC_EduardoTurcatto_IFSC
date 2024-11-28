@@ -10,175 +10,163 @@ Esse código foi desenvolvido para as atividas de TCC do curso de ENG. Controle 
 IFSC - Chapecó 
 
 Desenvolvido por: Eduardo Turcatto
-Versão: b1.0.0.v0.1
+Versão: b1.1.0.v1.0
 Data: 22/11/2024
 */
-///////////////////////// BIBLIOTECAS /////////////////////////
-#include <Arduino.h>
 #include <Wire.h>
+#include <Arduino.h>
 
-////////////////////////// VARIAVEIS //////////////////////////
-//----------------------------------------------------------//
-// Configuração I2C
-#define MPU_SDA 21
-#define MPU_SCL 22
+#define MPU9250_ADDR 0x68
+#define GYRO_XOUT_H 0x43 
+#define GYRO_CONFIG 0x1B
 
-// Configuração do Sensor
-#define MPU_Address 0x68
-#define MPU_Acc_Config 0x1C
-#define MPU_Acc_Xout 0X3B
+#define VECTOR_SIZE 100 // Tamanho do vetor de dados
+#define FILTER_SIZE 10 // Tamanho do filtro de média móvel (quantas leituras manter no buffer)
+#define SAMPLE_INTERVAL 10000 // Intervalo de amostragem em microssegundos (10ms)
 
-// Variáveis
-volatile bool bFlagSensorRead = false;
-int iVetorSize = 2000;
-int Index = 0;
-float *MPUAccX, *MPUAccY, *MPUAccZ;
-bool bFlagRunnig = false;
+float gyroZData[VECTOR_SIZE]; // Vetor para armazenar os dados de rotação no eixo Z (giroscópio)
+float gyroZFiltered = 0.0; // Giroscópio filtrado em Z
+float gyroScale = 131.0; // Sensibilidade para ±250°/s (131 LSB/°/s)
+float offsetZ = -0.16; // Offset do giroscópio Z
 
-//----------------------------------------------------------//
-// Timer
-hw_timer_t *t_MPUTimer = NULL;
+int dataIndex = 0; // Índice do vetor de dados
+bool collectData = false; // Flag para controlar quando coletar dados
+bool testInProgress = false; // Flag para saber se o teste está em andamento
 
-//////////////////// DECLARAÇÃO DE FUNÇÕES ///////////////////
-//----------------------------------------------------------//
-// Sensor
-void MPU_Inicialize();
-void MPU_Read(float &AccX, float &AccY, float &AccZ);
+hw_timer_t *timer = NULL; // Timer para a interrupção
+portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED; // Mecanismo para sincronizar interrupções
 
-//----------------------------------------------------------//
-// Timer
-void IRAM_ATTR MPU_Interrupt();
+volatile bool readData = false; // Flag para indicar quando ler os dados
 
-//////////////////////////// SETUP ///////////////////////////
+// Buffer para o filtro de média móvel simples
+float filterBuffer[FILTER_SIZE];
+int filterIndex = 0;
+
+void IRAM_ATTR onTimer() {
+  portENTER_CRITICAL_ISR(&timerMux);
+  readData = true; // Sinaliza que a leitura dos dados deve ser feita
+  portEXIT_CRITICAL_ISR(&timerMux);
+}
+
+void printAndResetTest();
+void readGyroData(int16_t *data);
+float applyMovingAverageFilter(float input);
+
 void setup() {
   Serial.begin(115200);
-  //----------------------------------------------------------//
-  // I2C
-  Wire.begin(MPU_SDA,MPU_SCL);
-  MPU_Inicialize();
+  Wire.begin();
 
-  Serial.println("Sensor incializado!");
+  // Configura o MPU-9250
+  Wire.beginTransmission(MPU9250_ADDR);
+  Wire.write(0x6B); // Registrador de gerenciamento de energia
+  Wire.write(0x00); // Ativa o sensor
+  Wire.endTransmission();
 
-  MPUAccX = new float[iVetorSize];
-  MPUAccY = new float[iVetorSize];
-  MPUAccZ = new float[iVetorSize];
+  // Configura o alcance do giroscópio para ±250°/s
+  Wire.beginTransmission(MPU9250_ADDR);
+  Wire.write(GYRO_CONFIG);
+  Wire.write(0x00); // ±250°/s
+  Wire.endTransmission();
 
-  //----------------------------------------------------------//
-  // Timer
-  t_MPUTimer = timerBegin(0,80,true);
-  timerAttachInterrupt(t_MPUTimer, &MPU_Interrupt, true);
-  timerAlarmWrite(t_MPUTimer, 10, true);
+  // Configuração do temporizador para interrupção a cada 10ms (10000 microssegundos)
+  timer = timerBegin(0, 80, true); // Timer 0, prescaler 80 (1 microsegundo)
+  timerAttachInterrupt(timer, &onTimer, true); // Chama a função onTimer quando o timer dispara
+  timerAlarmWrite(timer, SAMPLE_INTERVAL, true); // Interrupção a cada 10ms
+  timerAlarmEnable(timer); // Habilita o temporizador
+
+  Serial.println("Digite 'start' para iniciar o teste.");
 }
 
-/////////////////////////// LOOP ////////////////////////////
 void loop() {
-  if (!bFlagRunnig){
-    Serial.println("Deseja iniciar a coleta de dados ? [Y/N]");
+  // Verifica comandos recebidos via Serial
+  if (Serial.available() > 0) {
+    String command = Serial.readStringUntil('\n');
+    command.trim(); // Remove espaços ou quebras de linha extras
 
-    while (Serial.available() == 0){
-
-    }
-
-    if (Serial.available() > 0){
-      String strComand = Serial.readStringUntil('\n');
-      strComand.trim();
-
-      if (strComand.equalsIgnoreCase("Y")){
-        Serial.println("Iniciando coleta de dados, aguarde!");
-        bFlagRunnig = true;
-        timerAlarmEnable(t_MPUTimer);
-      }
-      else if (strComand.equalsIgnoreCase("N")){
-        Serial.println("Código encerrado, press reset para reiniciar!");
-        delay(500000);
-        return;
-      }
+    if (command == "start" && !testInProgress) {
+      Serial.println("Iniciando coleta de dados...");
+      collectData = true;
+      testInProgress = true; // Marca o teste como em andamento
+      dataIndex = 0; // Reinicia o índice
+    } else if (command == "stop") {
+      Serial.println("Coleta de dados interrompida.");
+      collectData = false;
     }
   }
 
-  if (bFlagSensorRead){
-    timerAlarmDisable(t_MPUTimer);
-    bFlagSensorRead = false;
-    if (Index < iVetorSize){
-      float ax,ay,az;
-      MPU_Read(ax,ay,az);
+  // Realiza a leitura do giroscópio se solicitado
+  if (collectData) {
+    if (readData) {
+      // A interrupção sinalizou que devemos realizar a leitura
+      portENTER_CRITICAL(&timerMux);
+      readData = false; // Reseta a flag
+      portEXIT_CRITICAL(&timerMux);
 
-      MPUAccX[Index] = ax;
-      MPUAccY[Index] = ay;
-      MPUAccZ[Index] = az;
-      Index++;
-      timerAlarmEnable(t_MPUTimer);
-    }else{
-      Serial.println("Coleta finalizada. Imprimindo dados na tela . . .");
-      delay(500);
-      for (int i = 0; i < iVetorSize; i++){
-        Serial.print(MPUAccX[i]/16384.0);
-        Serial.print(" ");
-        Serial.print(MPUAccY[i]/16384.0);
-        Serial.print(" ");
-        Serial.println(MPUAccZ[i]/16384.0);
-      }
-      Serial.println("Deseja Realizar nova coleta de dados ? [Y/N]");
+      int16_t rawData[3];
+      readGyroData(rawData);
 
-      while (Serial.available() == 0){
+      // Converte os valores brutos para °/s e aplica os offsets
+      float rawZ = rawData[2] / gyroScale - offsetZ;
 
-      }
+      // Aplica o filtro de média móvel simples (SMA) no valor Z
+      gyroZFiltered = applyMovingAverageFilter(rawZ);
 
-      if (Serial.available() > 0){
-        String strComand = Serial.readStringUntil('\n');
-        strComand.trim();
+      // Armazena o valor filtrado no vetor
+      gyroZData[dataIndex] = gyroZFiltered;
 
-        if (strComand.equalsIgnoreCase("Y")){
-          Index = 0;
-          Serial.println("Iniciando coleta de dados! Aguarde . . .");
-          timerAlarmEnable(t_MPUTimer);
-        }
-        else if (strComand.equalsIgnoreCase("N")){
-          Serial.println("Código encerrado, presione reset para reiniciar!");
-          delay(500000);
-          return;
-        }
+      dataIndex++;
+
+      // Verifica se o vetor foi preenchido
+      if (dataIndex >= VECTOR_SIZE) {
+        collectData = false; // Interrompe a coleta
+        Serial.println("Vetor de dados cheio.");
+        printAndResetTest(); // Exibe os dados e reinicia para o próximo teste
       }
     }
-
   }
-  
 }
 
-///////////////////////// FUNÇÕES ///////////////////////////
-//----------------------------------------------------------//
-// Timer
-void IRAM_ATTR MPU_Interrupt(){
-  bFlagSensorRead = true;
-}
-
-// Sensor
-void MPU_Read(float &AccX, float &AccY, float &AccZ){
-  Wire.beginTransmission(MPU_Address);
-  Wire.write(MPU_Acc_Xout);
+void readGyroData(int16_t *data) {
+  Wire.beginTransmission(MPU9250_ADDR);
+  Wire.write(GYRO_XOUT_H); // Registrador do giroscópio X
   Wire.endTransmission(false);
+  Wire.requestFrom(MPU9250_ADDR, 6, true); // 6 bytes para X, Y, Z
 
-  Wire.requestFrom(MPU_Address,6);
-  if (Wire.available()==6){
-    AccX = (Wire.read() << 8 | Wire.read());
-    AccY = (Wire.read() << 8 | Wire.read());
-    AccZ = (Wire.read() << 8 | Wire.read());
-  }
+  data[0] = (Wire.read() << 8) | Wire.read(); // X
+  data[1] = (Wire.read() << 8) | Wire.read(); // Y
+  data[2] = (Wire.read() << 8) | Wire.read(); // Z
 }
 
-void MPU_Inicialize(){
-  Wire.begin(MPU_SDA, MPU_SCL);
+// Função do filtro de média móvel simples (SMA)
+float applyMovingAverageFilter(float input) {
+  // Substitui o valor mais antigo no buffer pelo novo valor
+  filterBuffer[filterIndex] = input;
 
-    // Wake up do sensor
-    Wire.beginTransmission(MPU_Address);
-    Wire.write(0x6B); // Registro de Power Management
-    Wire.write(0x00); // Wake-up
-    Wire.endTransmission();
+  // Calcula a média do buffer
+  float sum = 0;
+  for (int i = 0; i < FILTER_SIZE; i++) {
+    sum += filterBuffer[i];
+  }
 
-    // Configurar a escala do acelerômetro (±2g)
-    Wire.beginTransmission(MPU_Address);
-    Wire.write(MPU_Acc_Config);
-    Wire.write(0x00); // ±2g
-    Wire.endTransmission();
+  // Atualiza o índice do buffer (circular)
+  filterIndex = (filterIndex + 1) % FILTER_SIZE;
 
+  return sum / FILTER_SIZE;
+}
+
+// Função para imprimir os dados e reiniciar o teste
+void printAndResetTest() {
+  Serial.println("Dados coletados:");
+
+  // Exibe os dados no vetor
+  for (int i = 0; i < VECTOR_SIZE; i++) {
+    Serial.printf("Z: %.2f\n", gyroZData[i]);
+  }
+
+  // Pergunta ao usuário se deseja iniciar um novo teste
+  Serial.println("Digite 'start' para iniciar um novo teste.");
+
+  // Aguarda o usuário para reiniciar o teste
+  testInProgress = false;
+  collectData = false; // Interrompe a coleta de dados
 }

@@ -101,10 +101,11 @@ void setup() {
     ledcAttachPin(Exc_Motor_Pin_Hor,Pwm_Chanel_Hor);
 
     // Motor pinMode
-    pinMode(Ctrl_Motor_Pin_Ant, OUTPUT);
+    /*pinMode(Ctrl_Motor_Pin_Ant, OUTPUT);
     pinMode(Ctrl_Motor_Pin_Hor, OUTPUT);
     pinMode(Exc_Motor_Pin_Ant, OUTPUT);
-    pinMode(Exc_Motor_Pin_Hor, OUTPUT);
+    pinMode(Exc_Motor_Pin_Hor, OUTPUT);*/
+
 
     //----------------------------------------------------------//
     // Encoder
