@@ -112,6 +112,9 @@ void setup() {
     pinMode(Enc_Canal_A_Pin, INPUT_PULLUP);
     pinMode(Enc_Canal_B_Pin, INPUT_PULLUP);
 
+    attachInterrupt(digitalPinToInterrupt(Enc_Canal_A_Pin), Enc_Canal_A_Counter, RISING);
+    attachInterrupt(digitalPinToInterrupt(Enc_Canal_B_Pin), Enc_Canal_B_Counter, RISING);
+
     //----------------------------------------------------------//
     // Timers
     t_EncTimer = timerBegin(0, 80, true);
@@ -174,16 +177,16 @@ void loop() {
     if (bFlagEnc){
         timerAlarmDisable(t_EncTimer);
         bFlagEnc = false;
-        detachInterrupt(Enc_Canal_A_Pin);
-        detachInterrupt(Enc_Canal_B_Pin);
+       
+        //detachInterrupt(Enc_Canal_A_Pin);
+        //detachInterrupt(Enc_Canal_B_Pin);
 
         CalcRPS();
 
-        Enc_A_Pulse = 0;
-        Enc_B_Pulse = 0;
+        //Enc_A_Pulse = 0;
+        //Enc_B_Pulse = 0;
 
-        attachInterrupt(digitalPinToInterrupt(Enc_Canal_A_Pin), Enc_Canal_A_Counter, FALLING);
-        attachInterrupt(digitalPinToInterrupt(Enc_Canal_B_Pin), Enc_Canal_B_Counter, FALLING);
+        
         timerAlarmEnable(t_EncTimer);
     }
 
@@ -381,8 +384,8 @@ void MotorTest(){
                 iContador++;
                 CalcRPS();
 
-                Enc_A_Pulse = 0;
-                Enc_B_Pulse = 0;
+                //Enc_A_Pulse = 0;
+                //Enc_B_Pulse = 0;
 
                 attachInterrupt(digitalPinToInterrupt(Enc_Canal_A_Pin), Enc_Canal_A_Counter, FALLING);
                 attachInterrupt(digitalPinToInterrupt(Enc_Canal_B_Pin), Enc_Canal_B_Counter, FALLING);
@@ -426,6 +429,7 @@ void MotorTest(){
 }
 
 void CalcRPS(){
+    Serial.println(Enc_A_Pulse);
     Enc_RPS = 10*(Enc_A_Pulse/Enc_Pulse_Relv);
     Motor_RPS = 10*((Enc_A_Pulse*3)/Enc_Pulse_Relv);
 }

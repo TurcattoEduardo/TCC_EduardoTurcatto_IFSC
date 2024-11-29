@@ -1,23 +1,8 @@
-/* Informações Gerais
-Código desenvolvido para realizar leituras de aceleração com o sensor MPU-9250
-
-O presente código conta com a configuração e preparo do sensor MPU-9250 sem a utilização
-de bibliotecas, realizando a leitura através de uma interrupção para garantir um taxa
-de amostragem fixa, além de demonstrar a configuração do barraemnto do I2C em velocidade
-máxima. Para esse código foi utilizado um microcontrolador ESP-32-DEVKIT-V1 (DOIT).
-
-Esse código foi desenvolvido para as atividas de TCC do curso de ENG. Controle e Automação
-IFSC - Chapecó 
-
-Desenvolvido por: Eduardo Turcatto
-Versão: b1.1.0.v1.0
-Data: 22/11/2024
-*/
 #include <Wire.h>
 #include <Arduino.h>
 
 #define MPU9250_ADDR 0x68
-#define GYRO_XOUT_H 0x43 
+#define GYRO_XOUT_H 0x43
 #define GYRO_CONFIG 0x1B
 
 #define VECTOR_SIZE 100 // Tamanho do vetor de dados
