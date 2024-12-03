@@ -31,6 +31,7 @@ float offsetY = 0.0;
 float offsetZ = 0.0;
 
 uint8_t Ctrl_Vel = 75;
+volatile long Pulse_Counter = 0;
 
 // Estados e controle
 volatile bool timerFlag = false; // Indica que a ISR foi disparada
@@ -71,7 +72,7 @@ void setup() {
   // Configuração do encoder
   pinMode(encoderPinA, INPUT_PULLUP);
   pinMode(encoderPinB, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(encoderPinA), []() { encoderPulsesA++; }, FALLING);
+  attachInterrupt(digitalPinToInterrupt(encoderPinA), []() { encoderPulsesA++;Pulse_Counter++; }, FALLING);
 
   // Inicialização do mutex
   dataMutex = xSemaphoreCreateMutex();
