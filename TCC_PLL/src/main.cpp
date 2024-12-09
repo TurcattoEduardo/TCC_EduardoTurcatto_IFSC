@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <math.h>
 
 ////////////////////////// VARIÁVEIS //////////////////////////
 // Configurações do MPU-9250
@@ -12,10 +13,13 @@ const int CONFIG = 0x1A;
 const int ACCEL_CONFIG = 0x1C;
 const int ACCEL_XOUT_H = 0x3B;
 
+#define pi 3.1415
+
 // Vetor para armazenar leituras do acelerômetro
 const int SAMPLES = 1000; // 10ms por amostra, total 1s
 float accelData[SAMPLES][3]; // X, Y, Z em mm/s²
 int sampleIndex = 0;
+float EncData[SAMPLES];
 
 // Configuração do Encoder
 const int encoderPinA = 14;
@@ -30,7 +34,7 @@ float offsetX = 0.0;
 float offsetY = 0.0;
 float offsetZ = 0.0;
 
-uint8_t Ctrl_Vel = 75;
+uint8_t Ctrl_Vel = 60;
 volatile long Pulse_Counter = 0;
 
 // Estados e controle
@@ -59,6 +63,7 @@ void readAndFilterMPU(float &ax, float &ay, float &az); // Nova função com fil
 void IRAM_ATTR onTimer(); // Função de interrupção
 float calculateRPS(); // Função para calcular RPS
 void convertAndPrintData();
+void Enc_Sin(long pulses);
 
 //////////////////////////// SETUP ///////////////////////////
 void setup() {
@@ -106,6 +111,8 @@ void loop() {
         timerFlag = false;
         timerAlarmEnable(timer); // Inicia o timer
         Serial.println("Coleta de dados iniciada...");
+        Pulse_Counter = 0;
+        encoderPulsesA = 0;
         analogWrite(Ctrl_Motor_Pin_1,Ctrl_Vel);
       } else {
         Serial.println("Já está coletando dados. Aguarde o término.");
@@ -139,6 +146,8 @@ void loop() {
     currentRPS = calculateRPS();
     encoderPulsesA = 0;
 
+    Enc_Sin(Pulse_Counter);
+
     sampleIndex++;
 
     if (sampleIndex >= SAMPLES) {
@@ -153,13 +162,14 @@ void loop() {
 ///////////////////////// FUNÇÕES ///////////////////////////
 void setupMPU9250() {
   Wire.beginTransmission(MPU9250_ADDR);
-  Wire.write(0x6B);
-  Wire.write(0x00); // Acorda o sensor
+  Wire.write(SMPLRT_DIV);
+  Wire.write(99); // 100 Hz (1 kHz / (1 + 99))
   Wire.endTransmission();
 
+  // Configuração do filtro DLPF
   Wire.beginTransmission(MPU9250_ADDR);
   Wire.write(CONFIG);
-  Wire.write(0x00); // Sem filtro
+  Wire.write(2); // 92 Hz de banda passante
   Wire.endTransmission();
 
   Wire.beginTransmission(MPU9250_ADDR);
@@ -250,9 +260,17 @@ void convertAndPrintData() {
       Serial.print(accelData[i][1], 2);
       Serial.print(" mm/s², Z= ");
       Serial.print(accelData[i][2], 2);
+      Serial.print(" Seno: ");
+      Serial.print(EncData[i]*10,4);
       Serial.print(" mm/s², RPS= ");
       Serial.println(currentRPS, 4);
     }
     xSemaphoreGive(dataMutex);
   }
+}
+
+void Enc_Sin(long pulses){
+
+  EncData[sampleIndex] = -0.002*currentRPS* currentRPS*sin((pulses)*((2*pi)/pulsesPerRevolution));
+
 }
