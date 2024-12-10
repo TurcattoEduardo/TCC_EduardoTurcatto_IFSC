@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <math.h>
+#include <arduinoFFT.h>
 
 ////////////////////////// VARIÁVEIS //////////////////////////
 // Configurações do MPU-9250
@@ -12,7 +13,7 @@ const int ACCEL_CONFIG = 0x1C;
 const int ACCEL_XOUT_H = 0x3B;
 
 // Vetor para armazenar leituras do acelerômetro e sinal senoidal
-const int SAMPLES = 200; // Total de amostras por teste
+const int SAMPLES = 64; // Total de amostras por teste
 float accelData[SAMPLES][3]; // X, Y, Z em mm/s²
 float sinData[SAMPLES]; // Sinal senoidal
 volatile int sampleIndex = 0;
@@ -37,6 +38,21 @@ bool collectingData = false; // Controle do estado de coleta
 #define Ctrl_Motor_A 33
 #define Ctrl_Motor_H 27
 
+// Configuração para FFT
+#define SAMPLES 64 // Mesmo número de amostras
+#define SAMPLING_FREQUENCY 100.0 // Frequência de amostragem em Hz
+
+// Vetores para FFT
+double vReal[SAMPLES];
+double vImag[SAMPLES];
+ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, SAMPLES, SAMPLING_FREQUENCY); // Instância da classe com tipo double
+
+// Controle
+float e_ant = 0;
+float c_ant = 0;
+float Kp = 0.08;
+float Ki = 0.004;
+
 //////////////////// DECLARAÇÃO DE FUNÇÕES ///////////////////
 void setupMPU9250();
 void calibrateMPU9250();
@@ -44,6 +60,8 @@ void readMPU9250(float &ax, float &ay, float &az);
 void reconstructSinSignal(int index);
 void printCollectedData();
 void IRAM_ATTR onTimer(); // Função de interrupção
+void calculatePhaseDifference();
+void Controle(double erro);
 
 //////////////////////////// SETUP ///////////////////////////
 void setup() {
@@ -117,11 +135,14 @@ void loop() {
 
       sampleIndex++;
     } else {
-      collectingData = false;
+      //collectingData = false;
       timerAlarmDisable(timer); // Para o timer
-      Serial.println("Coleta de dados concluída.");
-      analogWrite(Ctrl_Motor_A,0);
-      printCollectedData();
+      //Serial.println("Coleta de dados concluída.");
+      //analogWrite(Ctrl_Motor_A,0);
+      //printCollectedData();
+      calculatePhaseDifference();
+      sampleIndex = 0;
+      timerAlarmEnable(timer);
     }
   }
 }
@@ -225,4 +246,84 @@ void printCollectedData() {
 
 void IRAM_ATTR onTimer() {
   timerFlag = true;
+}
+
+void calculatePhaseDifference() {
+  // Preenchendo os vetores com os dados coletados
+  for (int i = 0; i < SAMPLES; i++) {
+    vReal[i] = accelData[i][1]; // Usa o eixo Y do acelerômetro
+    vImag[i] = 0.0; // Parte imaginária zerada
+  }
+
+  // Realizando a FFT do acelerômetro
+  FFT.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+  FFT.compute(FFT_FORWARD);
+  FFT.complexToMagnitude();
+
+  // Identificando a frequência dominante
+  int dominantIndex = FFT.majorPeak();
+  double freqAcelerometro = (double)dominantIndex * SAMPLING_FREQUENCY / SAMPLES;
+  double phaseAcelerometro = atan2(vImag[dominantIndex], vReal[dominantIndex]);
+
+  // Fazendo a mesma coisa para o sinal reconstruído
+  for (int i = 0; i < SAMPLES; i++) {
+    vReal[i] = sinData[i]; // Sinal senoidal reconstruído
+    vImag[i] = 0.0;
+  }
+
+
+  FFT.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+  FFT.compute(FFT_FORWARD);
+  FFT.complexToMagnitude();
+
+  dominantIndex = FFT.majorPeak();
+  double freqReconstruido = (double)dominantIndex * SAMPLING_FREQUENCY / SAMPLES;
+  double phaseReconstruido = atan2(vImag[dominantIndex], vReal[dominantIndex]);
+
+  // Calculando a diferença de fase
+  double phaseDifference = phaseAcelerometro - phaseReconstruido;
+
+  // Normalizando para o intervalo [-pi, pi]
+  if (phaseDifference > PI) {
+    phaseDifference -= 2 * PI;
+  } else if (phaseDifference < -PI) {
+    phaseDifference += 2 * PI;
+  }
+
+  // Convertendo para graus
+  double phaseDifferenceDegrees = phaseDifference * (180.0 / PI);
+  Controle(phaseDifferenceDegrees);
+
+  // Imprimindo os resultados
+  /*Serial.print("Frequência do Acelerômetro: ");
+  Serial.print(freqAcelerometro);
+  Serial.println(" Hz");
+  Serial.print("Frequência do Reconstruído: ");
+  Serial.print(freqReconstruido);
+  Serial.println(" Hz");
+  Serial.print("Diferença de Fase: ");
+  Serial.print(phaseDifferenceDegrees);*/
+  Serial.println(" graus");
+}
+
+void Controle(double erro){
+  float e = erro-180;
+
+  float c = c_ant + (Kp*e) - (Ki*e_ant);
+
+  c_ant = c;
+  e_ant = e;
+
+  if (c<0){
+    c=0;
+  }
+
+  if (c>180){
+    c=180;
+  }
+
+  Serial.println(c);
+
+  analogWrite(Ctrl_Motor_A,c);
+
 }

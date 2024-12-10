@@ -1,51 +1,81 @@
 ///////////////////////// BIBLIOTECAS /////////////////////////
 #include <Arduino.h>
+#include <Wire.h>
 #include <math.h>
 
 ////////////////////////// VARIÁVEIS //////////////////////////
-#define PI 3.1415
+// Configurações do MPU-9250
+const int MPU9250_ADDR = 0x68;
+const int SMPLRT_DIV = 0x19;
+const int CONFIG = 0x1A;
+const int ACCEL_CONFIG = 0x1C;
+const int ACCEL_XOUT_H = 0x3B;
 
-const int SAMPLES = 1000;  // 200 amostras (2 segundos se amostra a cada 10 ms)
-int sampleIndex = 0;
+// Vetor para armazenar leituras do acelerômetro e sinal senoidal
+const int SAMPLES = 200; // Total de amostras por teste
+float accelData[SAMPLES][3]; // X, Y, Z em mm/s²
+float sinData[SAMPLES]; // Sinal senoidal
+volatile int sampleIndex = 0;
+float filteray = 0;
+float alpha = 0.1;
 
-float refSinData[SAMPLES];  // Sinal de referência (seno)
-float cosData[SAMPLES];     // Sinal cosseno controlado
-float phaseData[SAMPLES];   // Diferença de fase calculada
+// Offsets do acelerômetro
+float offsetX = 0.0, offsetY = 0.0, offsetZ = 0.0;
 
-float frequency = 10.0;     // Frequência inicial do cosseno controlado
-float phaseSetpoint = 180.0; // Diferença de fase desejada
+// Configuração do Encoder
+const int encoderPinA = 14;
+volatile long encoderPulses = 0; // Contador de pulsos do encoder
+const int pulsesPerRevolution = 1000; // Pulsos por rotação
+float garfoAmplitude = 5.0; // Amplitude do sinal do garfo escocês (ajustar conforme modelo)
 
-// PID
-float Kp = 0.7, Ki = 0.05, Kd = 0.01;
-float phaseError = 0, lastError = 0, integral = 0, derivative = 0;
-
-volatile bool timerFlag = false;
-bool collectingData = false;
+// Timer e controle de interrupção
 hw_timer_t *timer = NULL;
+volatile bool timerFlag = false; // Flag setada pela interrupção
+bool collectingData = false; // Controle do estado de coleta
 
-// Variáveis para detecção de cruzamento por zero
-unsigned long lastZeroCrossingRef = 0;
-unsigned long lastZeroCrossingCos = 0;
+// Motor
+#define Ctrl_Motor_A 33
+#define Ctrl_Motor_H 27
+
+// Variáveis para cálculo de RPS
+volatile long lastPulseCount = 0; // Pulsos anteriores
+float currentRPS = 0.0; // RPS calculado
 
 //////////////////// DECLARAÇÃO DE FUNÇÕES ///////////////////
-void IRAM_ATTR onTimer();
-void Print();
-
-float SenoRef(int index);
-float CossenoControlado(int index, float freq);
-float PIDControl(float error);
+void setupMPU9250();
+void calibrateMPU9250();
+void readMPU9250(float &ax, float &ay, float &az);
+void reconstructSinSignal(int index);
+void printCollectedData();
+void IRAM_ATTR onTimer(); // Função de interrupção
+void calculateRPS(); // Função para calcular o RPS
 
 //////////////////////////// SETUP ///////////////////////////
 void setup() {
   Serial.begin(115200);
+  Wire.begin();
 
-  // Configuração do timer
-  timer = timerBegin(0, 80, true);   // Prescaler 80 -> 1 tick = 1µs
+  // Configuração do sensor
+  setupMPU9250();
+  calibrateMPU9250();
+
+  // Configuração do encoder
+  pinMode(encoderPinA, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(encoderPinA), []() { encoderPulses++; }, RISING);
+
+  // Configuração do timer para interrupção a cada 10 ms
+  timer = timerBegin(0, 80, true); // Prescaler de 80 para 1 MHz (1 µs por tick)
   timerAttachInterrupt(timer, &onTimer, true);
-  timerAlarmWrite(timer, 10000, true); // 10ms
-  timerAlarmDisable(timer);
+  timerAlarmWrite(timer, 10000, true); // Dispara a cada 10 ms
+  timerAlarmDisable(timer); // Inicialmente desativado
 
-  Serial.println("Digite 'START' para iniciar a coleta.");
+  pinMode(Ctrl_Motor_A, OUTPUT);
+  pinMode(Ctrl_Motor_H, OUTPUT);
+
+  analogWrite(Ctrl_Motor_A, 0);
+  analogWrite(Ctrl_Motor_H, 0);
+
+  Serial.println("Digite 'START' para iniciar a coleta de dados.");
 }
 
 /////////////////////////// LOOP ////////////////////////////
@@ -59,102 +89,157 @@ void loop() {
         sampleIndex = 0;
         collectingData = true;
         timerFlag = false;
-        timerAlarmEnable(timer);
-        Serial.println("Coleta iniciada...");
+        encoderPulses = 0;
+        lastPulseCount = 0;
+        currentRPS = 0.0;
+        analogWrite(Ctrl_Motor_A, 65);
+        timerAlarmEnable(timer); // Inicia o timer
+        Serial.println("Coleta de dados iniciada...");
       } else {
-        Serial.println("Já coletando dados.");
+        Serial.println("Coleta já está em andamento. Aguarde o término.");
       }
     } else if (command.equalsIgnoreCase("NEW")) {
       if (!collectingData) {
-        sampleIndex = 0;
-        Serial.println("Pronto para nova coleta, digite 'START'.");
+        Serial.println("Pronto para uma nova coleta. Digite 'START' para começar.");
       } else {
-        Serial.println("Coleta em andamento.");
+        Serial.println("Coleta em andamento. Aguarde o término.");
       }
     } else {
-      Serial.println("Comando não reconhecido ('START' ou 'NEW').");
+      Serial.println("Comando não reconhecido. Use 'START' ou 'NEW'.");
     }
   }
 
   if (collectingData && timerFlag) {
-    timerFlag = false;
+    timerFlag = false; // Limpa a flag da interrupção
 
-    float sRef = SenoRef(sampleIndex);
-    float cCtrl = CossenoControlado(sampleIndex, frequency);
+    if (sampleIndex < SAMPLES) {
+      float ax, ay, az;
+      readMPU9250(ax, ay, az); // Leitura do acelerômetro
 
-    refSinData[sampleIndex] = sRef;
-    cosData[sampleIndex] = cCtrl;
+      accelData[sampleIndex][0] = ax;
+      accelData[sampleIndex][1] = ay;
+      accelData[sampleIndex][2] = az;
 
-    // Detectar cruzamentos por zero do seno de referência (neg->pos)
-    if (sampleIndex > 0) {
-      if (sRef >= 0 && refSinData[sampleIndex - 1] < 0) {
-        lastZeroCrossingRef = micros();
-      }
-    }
+      reconstructSinSignal(sampleIndex); // Reconstrói o sinal senoidal
 
-    // Detectar cruzamentos por zero do cosseno controlado (neg->pos)
-    if (sampleIndex > 0) {
-      if (cCtrl >= 0 && cosData[sampleIndex - 1] < 0) {
-        lastZeroCrossingCos = micros();
-        // Quando o cosseno cruza zero, calcula a diferença de fase
-        unsigned long timeDiff = lastZeroCrossingCos - lastZeroCrossingRef;
-        // Período do seno de referência = 1 s = 1.000.000 µs
-        float phaseDiff = (timeDiff / 1000000.0) * 360.0;
-        if (phaseDiff > 360) phaseDiff = fmod(phaseDiff, 360.0);
+      // Calcula o RPS
+      calculateRPS();
 
-        phaseData[sampleIndex] = phaseDiff;
-
-        // Ajuste pelo PID
-        phaseError = phaseSetpoint - phaseDiff;
-        frequency += PIDControl(phaseError);
-        if(frequency < 1.0) frequency = 1.0;
-        if (frequency > 10.0) frequency = 10.0;
-      }
-    }
-
-    sampleIndex++;
-
-    if (sampleIndex >= SAMPLES) {
+      sampleIndex++;
+    } else {
       collectingData = false;
-      timerAlarmDisable(timer);
-      Print();
+      timerAlarmDisable(timer); // Para o timer
+      Serial.println("Coleta de dados concluída.");
+      analogWrite(Ctrl_Motor_A, 0);
+      printCollectedData();
     }
   }
 }
 
 ///////////////////////// FUNÇÕES ///////////////////////////
+void setupMPU9250() {
+  Wire.beginTransmission(MPU9250_ADDR);
+  Wire.write(SMPLRT_DIV);
+  Wire.write(0x68); // 100 Hz (1 kHz / (1 + 99))
+  Wire.endTransmission();
+
+  // Configuração do filtro DLPF
+  Wire.beginTransmission(MPU9250_ADDR);
+  Wire.write(CONFIG);
+  Wire.write(0); // 92 Hz de banda passante
+  Wire.endTransmission();
+
+  Wire.beginTransmission(MPU9250_ADDR);
+  Wire.write(0x1C); // Configuração do intervalo de aceleração
+  Wire.write(0x00); // ±2g
+  Wire.endTransmission();
+}
+
+void calibrateMPU9250() {
+  analogWrite(Ctrl_Motor_A, 0);
+  analogWrite(Ctrl_Motor_H, 0);
+  int16_t rawX, rawY, rawZ;
+  float sumX = 0, sumY = 0, sumZ = 0;
+  const int samples = 500;
+
+  for (int i = 0; i < samples; i++) {
+    Wire.beginTransmission(MPU9250_ADDR);
+    Wire.write(ACCEL_XOUT_H);
+    Wire.endTransmission(false);
+    Wire.requestFrom(MPU9250_ADDR, 6, true);
+
+    rawX = (Wire.read() << 8) | Wire.read();
+    rawY = (Wire.read() << 8) | Wire.read();
+    rawZ = (Wire.read() << 8) | Wire.read();
+
+    sumX += rawX;
+    sumY += rawY;
+    sumZ += rawZ;
+    delay(10);
+  }
+
+  offsetX = sumX / samples;
+  offsetY = sumY / samples;
+  offsetZ = (sumZ / samples) - 16384; // Ajuste para compensar a gravidade
+}
+
+void readMPU9250(float &ax, float &ay, float &az) {
+  int16_t rawX, rawY, rawZ;
+
+  Wire.beginTransmission(MPU9250_ADDR);
+  Wire.write(ACCEL_XOUT_H);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU9250_ADDR, 6, true);
+
+  rawX = (Wire.read() << 8) | Wire.read();
+  rawY = (Wire.read() << 8) | Wire.read();
+  rawZ = (Wire.read() << 8) | Wire.read();
+
+  ax = rawX - offsetX;
+  ay = rawY - offsetY;
+  az = rawZ - offsetZ;
+
+  filteray = alpha * ay + (1 - alpha) * filteray;
+
+  ay = filteray;
+
+  const float scale = 2.0 / 32768.0;
+  const float gToMMs2 = 9806.65;
+
+  ax *= scale * gToMMs2;
+  ay *= scale * gToMMs2;
+  az *= scale * gToMMs2;
+}
+
+void reconstructSinSignal(int index) {
+  float angle = (float)(encoderPulses % pulsesPerRevolution) / pulsesPerRevolution * 2.0 * PI;
+  sinData[index] = garfoAmplitude * sin(angle);
+}
+
+void printCollectedData() {
+  Serial.println("Dados coletados (Acelerômetro, Sinal Senoidal e RPS):");
+  for (int i = 0; i < SAMPLES; i++) {
+    Serial.print("Amostra ");
+    Serial.print(i);
+    Serial.print(": Accel X= ");
+    Serial.print(accelData[i][0], 2);
+    Serial.print(" mm/s², Accel Y= ");
+    Serial.print(accelData[i][1], 2);
+    Serial.print(" mm/s², Accel Z= ");
+    Serial.print(accelData[i][2], 2);
+    Serial.print(" mm/s², Sinal Senoidal= ");
+    Serial.print(sinData[i], 2);
+    Serial.print(" , RPS= ");
+    Serial.println(currentRPS, 4);
+  }
+}
+
 void IRAM_ATTR onTimer() {
   timerFlag = true;
 }
 
-void Print() {
-  Serial.println("Leituras:");
-  for (int i = 0; i < SAMPLES; i++) {
-    Serial.print("Amostra ");
-    Serial.print(i);
-    Serial.print(": RefSeno: ");
-    Serial.print(refSinData[i], 4);
-    Serial.print(" CosCtrl: ");
-    Serial.print(cosData[i], 4);
-    Serial.print(" Fase: ");
-    Serial.println(phaseData[i], 4);
-  }
-}
-
-float SenoRef(int index) {
-  // Frequência do seno = 1 Hz, t = index * 0.01s
-  float t = index * 0.01;
-  return sin(2 * PI * 1.0 * t);
-}
-
-float CossenoControlado(int index, float freq) {
-  float t = index * 0.01;
-  return cos(2 * PI * freq * t);
-}
-
-float PIDControl(float error) {
-  integral += error;
-  derivative = error - lastError;
-  lastError = error;
-  return (Kp * error + Ki * integral + Kd * derivative);
+void calculateRPS() {
+  long pulseDifference = encoderPulses - lastPulseCount;
+  currentRPS = (pulseDifference / (float)pulsesPerRevolution) / 0.01; // 0.01s = 10ms
+  lastPulseCount = encoderPulses;
 }
