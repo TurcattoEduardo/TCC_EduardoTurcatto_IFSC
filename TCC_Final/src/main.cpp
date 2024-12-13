@@ -36,13 +36,13 @@ float EncLastZeroCrossingPos = 0, EncLastZeroCrossingNeg = 0;
 
 // Controle de Frequencia
 float FreqCurrentError = 0, FreqLastError = 0, FreqCurrentControl = 0, FreqLastControl = 0;
-const float FreqKp = 1, FreqKi = 1;
-float FreqRef = 0;
+const float FreqKp = 0.709285, FreqKi = 0.0136;
+float FreqRef = 4;
 
 // Controle de Phase
 float PhaseCurrentError = 0, PhaseLastError = 0, PhaseCurrentControl = 0, PhaseLastControl = 0;
-const float PhaseKp = 1, PhaseKi = 1;
-float PhaseRef = 180;
+const float PhaseKp = 0.0000021, PhaseKi = 0.000005;
+float PhaseRef = 75;
 float CurrentPhase = 0;
 
 // Controle de tempo e flags
@@ -57,6 +57,8 @@ volatile bool systemRunning = false; // Estado do sistema
 // Motor
 #define Ctrl_Motor_A 33
 #define Ctrl_Motor_H 27
+#define Exc_Motor_A 25
+#define Exc_Motor_H 26
 
 // Mutex para proteger os dados compartilhados
 SemaphoreHandle_t dataMutex;
@@ -118,6 +120,11 @@ void setup() {
   analogWrite(Ctrl_Motor_A, 0);
   analogWrite(Ctrl_Motor_H, 0);
 
+  pinMode(Exc_Motor_A,OUTPUT);
+  pinMode(Exc_Motor_H,OUTPUT);
+  analogWrite(Exc_Motor_A,0);
+  analogWrite(Exc_Motor_H,0);
+
   Serial.println("Sistema iniciado. Digite 'START' para iniciar ou 'STOP' para pausar.");
 }
 
@@ -145,6 +152,10 @@ void loop() {
         readMPU9250(ax,ay,az);
         AccelCurrentValue = ay;
         EncSin();
+        //Serial.print("Accel: ");
+        Serial.println(AccelCurrentValue);
+        //Serial.print(" Enc: ");
+        //Serial.println(EncCurrentValue);
         ZeroCrossing();
         xSemaphoreGive(dataMutex);
       }
@@ -155,6 +166,7 @@ void loop() {
 
       // Proteção com mutex
       if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+         //CalculatePhaseDifference();
         calculatePhaseControl();
         xSemaphoreGive(dataMutex);
       }
@@ -242,6 +254,13 @@ void FreqControl() {
 
   FreqCurrentControl = FreqLastControl + FreqLastError*FreqKp + FreqLastError*FreqKi;
 
+  if (FreqCurrentControl >= 120){
+    FreqCurrentControl = 120;
+  }else if (FreqCurrentControl < 0){
+    FreqCurrentControl = 0;
+  }
+  //Serial.println(FreqCurrentControl);
+
   FreqLastControl = FreqCurrentControl;
   FreqLastError = FreqCurrentError;
 
@@ -250,8 +269,11 @@ void FreqControl() {
 
 void CalculateRPS(){
   long pulseDifference = encoderPulses - lastPulseCount;
-  CurrentRPS = (pulseDifference / (float)pulsesPerRevolution) / 0.001; // 0.001s = 1ms
+  CurrentRPS = (pulseDifference / (float)pulsesPerRevolution)*1000; // 0.001s = 1ms
   lastPulseCount = encoderPulses;
+  //Serial.print(pulseDifference);
+  //erial.print(" RPS: ");
+  //Serial.println(CurrentRPS);
 }
 
 void EncSin(){
@@ -262,14 +284,37 @@ void EncSin(){
 void calculatePhaseControl() {
   CalculatePhaseDifference();
 
+  CurrentPhase = abs(CurrentPhase);
+
   PhaseCurrentError = PhaseRef - CurrentPhase;
 
+  if (PhaseCurrentError >= 180){
+    PhaseCurrentError = 180;
+  }
+
+  if (PhaseCurrentError <=-180){
+    PhaseCurrentError = -180;
+  }
+
+
   PhaseCurrentControl = PhaseLastControl + PhaseCurrentError*PhaseKp - PhaseLastError*PhaseKi;
+
+  if (PhaseCurrentControl <= 0){
+    PhaseCurrentControl = 0;
+  }
+
+  if (PhaseCurrentControl >= 5){
+    PhaseCurrentControl = 5;
+  }
 
   PhaseLastControl = PhaseCurrentControl;
   PhaseLastError = PhaseCurrentError;
 
-  ApllyMotorControl(PhaseCurrentControl+FreqCurrentControl);
+  FreqRef+=PhaseCurrentControl;
+
+  if (FreqRef >= 9){
+    FreqRef = 9;
+  }
 }
 
 void CalculatePhaseDifference(){
@@ -296,9 +341,14 @@ void CalculatePhaseDifference(){
     while (CurrentPhase < -180.0) CurrentPhase += 360.0;
   }
 
-  Serial.print("Diferença de fase: ");
-  Serial.print(CurrentPhase);
-  Serial.println(" graus");
+  //Serial.println(CurrentRPS);
+  //Serial.print("RPS: ");
+  //Serial.print(CurrentRPS);
+  //Serial.print("Ref: ");
+  //Serial.print(FreqRef);
+  //Serial.print(" Diferença de fase: ");
+  //Serial.print(CurrentPhase);
+  //Serial.println(" graus");
 }
 
 void ZeroCrossing(){
@@ -322,7 +372,7 @@ void ZeroCrossing(){
 }
 
 void ApllyMotorControl(float DutyCicle){
-  analogWrite(Ctrl_Motor_A, constrain(DutyCicle, 0, 255));
+  analogWrite(Ctrl_Motor_A, DutyCicle);
 }
 
 void IRAM_ATTR onVelocityTimer() {
@@ -346,6 +396,8 @@ void handleUserCommands() {
     if (command.equalsIgnoreCase("START")) {
       if (!systemRunning) {
         systemRunning = true;
+        analogWrite(Exc_Motor_A,100);
+        analogWrite(Exc_Motor_H,0);
         timerAlarmEnable(velocityTimer);
         timerAlarmEnable(accelerometerTimer);
         timerAlarmEnable(phaseControlTimer);
@@ -356,6 +408,10 @@ void handleUserCommands() {
     } else if (command.equalsIgnoreCase("STOP")) {
       if (systemRunning) {
         systemRunning = false;
+        analogWrite(Exc_Motor_A,0);
+        analogWrite(Exc_Motor_H,0);
+        analogWrite(Ctrl_Motor_A,0);
+        analogWrite(Ctrl_Motor_H,0);
         timerAlarmDisable(velocityTimer);
         timerAlarmDisable(accelerometerTimer);
         timerAlarmDisable(phaseControlTimer);
