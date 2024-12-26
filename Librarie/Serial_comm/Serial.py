@@ -5,6 +5,8 @@ import serial
 import threading
 import time
 import re
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 class SerialApp:
     def __init__(self, root):
@@ -17,10 +19,13 @@ class SerialApp:
         self.var_z = tk.StringVar(value="Z: --")
         self.var_rps = tk.StringVar(value="RPS: --")
         self.var_encsin = tk.StringVar(value="ENCSIN: --")
+        self.selected_data = tk.StringVar(value="X")  # Padrão: X
 
         # Variáveis para controle
         self.running = False
         self.esp = None
+        self.data_points = {"X": [], "Y": [], "Z": [], "RPS": [], "ENCSIN": []}
+        self.time_points = []
 
         # Variável de status da conexão
         self.connection_status = tk.StringVar(value="Desconectado")
@@ -60,6 +65,22 @@ class SerialApp:
         tk.Label(data_frame, textvariable=self.var_rps, font=("Arial", 14)).pack(pady=5)
         tk.Label(data_frame, textvariable=self.var_encsin, font=("Arial", 14)).pack(pady=5)
 
+        # Seletor de dado para gráfico
+        selector_frame = tk.Frame(self.root)
+        selector_frame.pack(pady=10)
+        tk.Label(selector_frame, text="Selecionar Dado:").pack(side=tk.LEFT, padx=5)
+        self.data_selector = ttk.Combobox(selector_frame, textvariable=self.selected_data, values=["X", "Y", "Z", "RPS", "ENCSIN"], width=10)
+        self.data_selector.pack(side=tk.LEFT, padx=5)
+
+        # Gráfico
+        self.figure = plt.Figure(figsize=(6, 4), dpi=100)
+        self.ax = self.figure.add_subplot(111)
+        self.ax.set_title("Gráfico em Tempo Real")
+        self.ax.set_xlabel("Tempo (s)")
+        self.ax.set_ylabel("Valor")
+        self.canvas = FigureCanvasTkAgg(self.figure, self.root)
+        self.canvas.get_tk_widget().pack()
+
         # Botões de controle
         button_frame = tk.Frame(self.root)
         button_frame.pack(pady=10)
@@ -89,16 +110,10 @@ class SerialApp:
             self.running = True
             self.update_status("Conectado", "green")
             threading.Thread(target=self.read_serial, daemon=True).start()
+            threading.Thread(target=self.update_plot, daemon=True).start()
         except serial.SerialException as e:
             messagebox.showerror("Erro", f"Erro ao estabelecer conexão: {e}")
             self.update_status("Desconectado", "red")
-
-    def calculate_crc(self, data):
-        """Calcula o CRC (checksum) da string recebida."""
-        crc = 0
-        for char in data:
-            crc ^= ord(char)  # XOR simples
-        return crc
 
     def read_serial(self):
         """Lê os dados da serial continuamente."""
@@ -108,9 +123,15 @@ class SerialApp:
                 self.process_message(message)
             time.sleep(0.1)
 
+    def calculate_crc(self, data):
+        """Calcula o CRC (checksum) da string recebida."""
+        crc = 0
+        for char in data:
+            crc ^= ord(char)  # XOR simples
+        return crc
+
     def process_message(self, message):
-        """Processa as mensagens recebidas e verifica o CRC."""
-        # Padrão esperado: [TAG] DADO[CRC]
+        """Processa as mensagens recebidas e atualiza os valores."""
         pattern = r"\[(\w+)\] ([^\[]+)\[(\d+)\]"
         match = re.match(pattern, message)
 
@@ -119,29 +140,45 @@ class SerialApp:
             data = match.group(2)  # DADO
             crc_received = int(match.group(3))  # CRC recebido
 
-            # Calcula o CRC esperado
             crc_calculated = self.calculate_crc(data)
-
             if crc_calculated == crc_received:
-                # Atualiza os valores com base na TAG
                 if tag == "MPU":
                     parts = data.split()
                     for part in parts:
                         key, value = part.split('=')
                         if key == "X":
                             self.var_x.set(f"X: {value}")
+                            self.data_points["X"].append(float(value))
                         elif key == "Y":
                             self.var_y.set(f"Y: {value}")
+                            self.data_points["Y"].append(float(value))
                         elif key == "Z":
                             self.var_z.set(f"Z: {value}")
+                            self.data_points["Z"].append(float(value))
                 elif tag == "RPS":
                     self.var_rps.set(f"RPS: {data}")
+                    self.data_points["RPS"].append(float(data))
                 elif tag == "ENCSIN":
                     self.var_encsin.set(f"ENCSIN: {data}")
+                    self.data_points["ENCSIN"].append(float(data))
+                self.time_points.append(time.time())
             else:
                 print(f"[{tag}] Dado inválido! CRC calculado ({crc_calculated}) não corresponde ao CRC recebido ({crc_received}).")
-        else:
-            print("Formato de mensagem inválido.")
+
+    def update_plot(self):
+        """Atualiza o gráfico em tempo real."""
+        while self.running:
+            if len(self.time_points) > 0:
+                self.ax.clear()
+                self.ax.set_title("Gráfico em Tempo Real")
+                self.ax.set_xlabel("Tempo (s)")
+                self.ax.set_ylabel("Valor")
+                selected_data = self.selected_data.get()
+                if selected_data in self.data_points and len(self.data_points[selected_data]) > 0:
+                    self.ax.plot(self.time_points[-len(self.data_points[selected_data]):], self.data_points[selected_data], label=selected_data)
+                    self.ax.legend()
+                self.canvas.draw()
+            time.sleep(1)
 
     def send_command(self, command):
         """Envia comandos ao ESP32."""
