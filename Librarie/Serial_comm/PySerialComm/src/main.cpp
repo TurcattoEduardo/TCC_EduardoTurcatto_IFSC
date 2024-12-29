@@ -1,52 +1,56 @@
-#include "MessageFormatter.h"
+#include <Arduino.h>
+#include "SerialProtocol.h"
+#include <stdlib.h> // Para geração de números aleatórios
 
-// Instância da biblioteca
-MessageFormatter formatter;
+// Buffer para envio e recepção
+uint8_t send_buffer[256];
+uint8_t receive_buffer[256];
 
-// Variável para controlar envio de dados
-bool sendData = false;
+void generate_random_data(float *data, int size) {
+    for (int i = 0; i < size; i++) {
+        data[i] = random(0, 1000) / 100.0; // Gera números float aleatórios entre 0.00 e 10.00
+    }
+}
 
 void setup() {
-    Serial.begin(9600);
-    Serial.println("ESP32 pronto. Aguarde o comando START.");
+    Serial.begin(115200); // Inicializa o monitor serial
+    Serial.println("Iniciando geração de mensagens...");
 }
 
 void loop() {
-    // Verifica se recebeu um comando
-    if (Serial.available() > 0) {
-        String command = Serial.readStringUntil('\n');
-        command.trim();  // Remove espaços em branco extras
+    // Gera dados aleatórios
+    float random_data[3];
+    generate_random_data(random_data, 3);
 
-        if (command == "START") {
-            sendData = true;
-            Serial.println("Comando START recebido. Enviando dados...");
-        } else if (command == "STOP") {
-            sendData = false;
-            Serial.println("Comando STOP recebido. Parando envio de dados...");
+    // Encapsula a mensagem com os dados gerados
+    int message_size = encapsulate_message(PREFIX_DATA, ID_ACC, random_data, sizeof(random_data), send_buffer);
+
+    if (message_size > 0) {
+        // Exibe a mensagem encapsulada no formato hexadecimal
+        Serial.print("Mensagem Encapsulada (HEX): ");
+        for (int i = 0; i < message_size; i++) {
+            Serial.printf("%02X ", send_buffer[i]);
         }
+        Serial.println();
+
+        // Decodifica a mensagem para simular a recepção
+        Message msg;
+        if (decode_message(send_buffer, message_size, &msg)) {
+            Serial.println("Mensagem Decodificada:");
+            Serial.printf("Prefixo: 0x%02X, Identificador: 0x%02X, Tamanho do Payload: %d\n",
+                          msg.prefix, msg.identifier, msg.payload_size);
+
+            // Exibe o payload decodificado
+            float *decoded_data = (float *)msg.payload;
+            for (int i = 0; i < msg.payload_size / sizeof(float); i++) {
+                Serial.printf("Valor %d: %.2f\n", i + 1, decoded_data[i]);
+            }
+        } else {
+            Serial.println("Erro ao decodificar a mensagem.");
+        }
+    } else {
+        Serial.println("Erro ao encapsular a mensagem.");
     }
 
-    // Envia os dados somente se o comando START foi recebido
-    if (sendData) {
-        // Gera valores aleatórios
-        int x = random(-100, 100);
-        int y = random(-100, 100);
-        int z = random(-100, 100);
-        int rps = random(0, 50);
-        float encsin = random(0, 10000) / 10000.0;
-
-        // Cria e envia mensagens formatadas
-        String mpuMessage = formatter.createMessage("MPU", "X=" + String(x) + " Y=" + String(y) + " Z=" + String(z));
-        String rpsMessage = formatter.createMessage("RPS", String(rps));
-        String encsinMessage = formatter.createMessage("ENCSIN", String(encsin, 4));
-
-        Serial.println(mpuMessage);
-        delay(500);
-
-        Serial.println(rpsMessage);
-        delay(500);
-
-        Serial.println(encsinMessage);
-        delay(500);
-    }
+    delay(1000); // Aguarda 1 segundo antes de gerar outra mensagem
 }
