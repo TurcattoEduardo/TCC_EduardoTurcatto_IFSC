@@ -1,193 +1,165 @@
-import ttkbootstrap as ttk
-from ttkbootstrap.constants import *
-from ttkbootstrap import Style
+import tkinter as tk
+from tkinter import ttk, messagebox
 import serial
+import struct
 import threading
-import time
-import re
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
+# Constantes definidas no protocolo
+PREFIX_DATA = 0x01
+ID_ACC = 0xA1  # Acelerômetro
+ID_RPS = 0xB1  # Velocidade (RPS)
+ID_ENC = 0xB2  # Posição do encoder
 
-class SerialApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Sistema de Controle e Monitoramento")
-        self.style = Style(theme="superhero")
+# Função para calcular CRC-16 (polinômio 0xA001)
+def calculate_crc(data):
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            if crc & 0x0001:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return crc
 
-        # Variáveis para exibir os dados
-        self.var_x = ttk.StringVar(value="X: --")
-        self.var_y = ttk.StringVar(value="Y: --")
-        self.var_z = ttk.StringVar(value="Z: --")
-        self.var_rps = ttk.StringVar(value="RPS: --")
-        self.var_encsin = ttk.StringVar(value="ENCSIN: --")
-        self.selected_data = ttk.StringVar(value="X")  # Dado padrão
-        self.connection_status = ttk.StringVar(value="Desconectado")
+# Função para decodificar mensagens
+def decode_message(buffer):
+    try:
+        # Verifica o tamanho mínimo da mensagem
+        if len(buffer) < 7:  # HEADER_SIZE + CRC_SIZE
+            return None
 
-        # Controle de conexão e dados
+        # Extrai o cabeçalho
+        prefix, identifier, payload_size = struct.unpack("BBB", buffer[:3])
+
+        # Valida o prefixo
+        if prefix != PREFIX_DATA:
+            print("Erro: Prefixo inválido")
+            return None
+
+        # Verifica se o tamanho do buffer é consistente
+        if len(buffer) != (3 + payload_size + 2):
+            print("Erro: Tamanho inconsistente")
+            return None
+
+        # Extrai o payload e o CRC
+        payload = buffer[3:3 + payload_size]
+        received_crc = struct.unpack("<H", buffer[-2:])[0]
+        calculated_crc = calculate_crc(buffer[:-2])
+
+        if received_crc != calculated_crc:
+            print(f"Erro no CRC. Recebido: {received_crc:04X}, Calculado: {calculated_crc:04X}")
+            return None
+
+        # Mensagem válida
+        return {"prefix": prefix, "identifier": identifier, "payload": payload}
+    except Exception as e:
+        print(f"Erro na decodificação: {e}")
+        return None
+
+# Classe principal do GUI
+class SerialApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Serial Communication GUI")
+        self.geometry("400x400")
+
+        self.serial_connection = None
         self.running = False
-        self.esp = None
-        self.data_points = {"X": [], "Y": [], "Z": [], "RPS": [], "ENCSIN": []}
-        self.time_points = []
+        self.buffer = b""
 
-        # Layout da interface
         self.create_widgets()
 
     def create_widgets(self):
-        # Frame principal
-        main_frame = ttk.Frame(self.root, padding=20)
-        main_frame.pack(fill=BOTH, expand=True)
+        self.port_label = tk.Label(self, text="Porta Serial:")
+        self.port_label.pack()
+        self.port_combobox = ttk.Combobox(self, values=["COM3", "COM4", "COM5"], width=20)
+        self.port_combobox.pack()
 
-        # Configurações de conexão
-        config_frame = ttk.Labelframe(main_frame, text="Configuração de Conexão", padding=10)
-        config_frame.pack(fill=X, padx=10, pady=10)
+        self.connect_button = tk.Button(self, text="Conectar", command=self.connect_serial)
+        self.connect_button.pack()
 
-        ttk.Label(config_frame, text="Porta COM:").grid(row=0, column=0, padx=5, pady=5)
-        self.com_port = ttk.Combobox(config_frame, values=self.get_serial_ports(), width=15)
-        self.com_port.grid(row=0, column=1, padx=5, pady=5)
-        self.com_port.set("COM3")
+        self.data_frame = tk.Frame(self)
+        self.data_frame.pack(pady=10)
 
-        ttk.Label(config_frame, text="Baud Rate:").grid(row=0, column=2, padx=5, pady=5)
-        self.baud_rate = ttk.Combobox(config_frame, values=["9600", "115200"], width=15)
-        self.baud_rate.grid(row=0, column=3, padx=5, pady=5)
-        self.baud_rate.set("9600")
+        self.labels = {}
+        for name in ["Accel X", "Accel Y", "Accel Z", "RPS", "ENC"]:
+            frame = tk.Frame(self.data_frame)
+            frame.pack()
+            label = tk.Label(frame, text=f"{name}:")
+            label.pack(side=tk.LEFT)
+            self.labels[name] = tk.Label(frame, text="N/A")
+            self.labels[name].pack(side=tk.LEFT)
 
-        ttk.Button(config_frame, text="Conectar", bootstyle=SUCCESS, command=self.establish_connection).grid(row=0, column=4, padx=5, pady=5)
-        ttk.Button(config_frame, text="Desconectar", bootstyle=DANGER, command=self.close_connection).grid(row=0, column=5, padx=5, pady=5)
+        self.disconnect_button = tk.Button(self, text="Desconectar", command=self.disconnect_serial, state=tk.DISABLED)
+        self.disconnect_button.pack()
 
-        ttk.Label(config_frame, text="Status:").grid(row=1, column=0, padx=5, pady=5, sticky=W)
-        self.status_label = ttk.Label(config_frame, textvariable=self.connection_status, bootstyle=INFO, anchor=CENTER, width=20)
-        self.status_label.grid(row=1, column=1, columnspan=2, padx=5, pady=5, sticky=W)
-
-        # Dados em tempo real
-        data_frame = ttk.Labelframe(main_frame, text="Dados Recebidos", padding=10)
-        data_frame.pack(fill=X, padx=10, pady=10)
-
-        ttk.Label(data_frame, textvariable=self.var_x, font=("Arial", 12)).grid(row=0, column=0, padx=10, pady=5, sticky=W)
-        ttk.Label(data_frame, textvariable=self.var_y, font=("Arial", 12)).grid(row=1, column=0, padx=10, pady=5, sticky=W)
-        ttk.Label(data_frame, textvariable=self.var_z, font=("Arial", 12)).grid(row=2, column=0, padx=10, pady=5, sticky=W)
-        ttk.Label(data_frame, textvariable=self.var_rps, font=("Arial", 12)).grid(row=3, column=0, padx=10, pady=5, sticky=W)
-        ttk.Label(data_frame, textvariable=self.var_encsin, font=("Arial", 12)).grid(row=4, column=0, padx=10, pady=5, sticky=W)
-
-        # Seletor de dado e gráfico
-        graph_frame = ttk.Labelframe(main_frame, text="Gráfico em Tempo Real", padding=10)
-        graph_frame.pack(fill=BOTH, padx=10, pady=10, expand=True)
-
-        ttk.Label(graph_frame, text="Selecionar Dado:").pack(side=TOP, padx=5, pady=5)
-        self.data_selector = ttk.Combobox(graph_frame, textvariable=self.selected_data, values=["X", "Y", "Z", "RPS", "ENCSIN"], width=15)
-        self.data_selector.pack(side=TOP, padx=5, pady=5)
-
-        self.figure = plt.Figure(figsize=(6, 4), dpi=100)
-        self.ax = self.figure.add_subplot(111)
-        self.ax.set_title("Gráfico em Tempo Real")
-        self.ax.set_xlabel("Amostras")
-        self.ax.set_ylabel("Valor")
-        self.canvas = FigureCanvasTkAgg(self.figure, graph_frame)
-        self.canvas.get_tk_widget().pack(fill=BOTH, expand=True)
-
-        # Botões de controle
-        control_frame = ttk.Frame(main_frame, padding=10)
-        control_frame.pack(fill=X, padx=10, pady=10)
-
-        ttk.Button(control_frame, text="Iniciar (START)", bootstyle=PRIMARY, command=lambda: self.send_command("START")).pack(side=LEFT, padx=5, pady=5)
-        ttk.Button(control_frame, text="Parar (STOP)", bootstyle=SECONDARY, command=lambda: self.send_command("STOP")).pack(side=LEFT, padx=5, pady=5)
-
-    def get_serial_ports(self):
-        """Retorna uma lista de portas COM disponíveis."""
-        import serial.tools.list_ports
-        ports = serial.tools.list_ports.comports()
-        return [port.device for port in ports]
-
-    def establish_connection(self):
-        """Estabelece a conexão serial."""
+    def connect_serial(self):
+        port = self.port_combobox.get()
         try:
-            port = self.com_port.get()
-            baud = int(self.baud_rate.get())
-            self.esp = serial.Serial(port, baud, timeout=1)
+            self.serial_connection = serial.Serial(port, 115200, timeout=1)
             self.running = True
+            self.connect_button.config(state=tk.DISABLED)
+            self.disconnect_button.config(state=tk.NORMAL)
             threading.Thread(target=self.read_serial, daemon=True).start()
-            threading.Thread(target=self.update_plot, daemon=True).start()
-            self.update_status("Conectado", "success")
-        except serial.SerialException as e:
-            self.update_status("Erro na conexão", "danger")
-            ttk.Messagebox.show_error("Erro", f"Erro ao estabelecer conexão: {e}")
+            messagebox.showinfo("Conexão", "Conectado com sucesso!")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível conectar: {e}")
 
-    def close_connection(self):
-        """Fecha a conexão serial."""
-        if self.esp and self.esp.is_open:
-            self.running = False
-            self.esp.close()
-            self.update_status("Desconectado", "info")
-
-    def update_status(self, status, style):
-        """Atualiza o estado de conexão no indicador."""
-        self.connection_status.set(status)
-        self.status_label.configure(bootstyle=style)
+    def disconnect_serial(self):
+        self.running = False
+        if self.serial_connection:
+            self.serial_connection.close()
+        self.connect_button.config(state=tk.NORMAL)
+        self.disconnect_button.config(state=tk.DISABLED)
+        messagebox.showinfo("Conexão", "Desconectado.")
 
     def read_serial(self):
-        """Lê os dados da serial continuamente."""
         while self.running:
-            if self.esp and self.esp.in_waiting > 0:
-                message = self.esp.readline().decode().strip()
-                self.process_message(message)
-            time.sleep(0.1)
+            try:
+                if self.serial_connection.in_waiting:
+                    data = self.serial_connection.read(self.serial_connection.in_waiting)
+                    self.buffer += data
 
-    def process_message(self, message):
-        """Processa as mensagens recebidas."""
-        pattern = r"\[(\w+)\] ([^\[]+)\[(\d+)\]"
-        match = re.match(pattern, message)
-        if match:
-            tag = match.group(1)
-            data = match.group(2)
+                    while len(self.buffer) >= 7:  # HEADER_SIZE + CRC_SIZE
+                        # Encontre o prefixo inicial
+                        if self.buffer[0] != PREFIX_DATA:
+                            self.buffer = self.buffer[1:]  # Remova bytes inválidos
+                            continue
 
-            # Atualiza os valores nos mostradores
-            if tag == "MPU":
-                parts = data.split()
-                for part in parts:
-                    key, value = part.split('=')
-                    if key == "X":
-                        self.var_x.set(f"X: {value}")
-                        self.data_points["X"].append(float(value))
-                    elif key == "Y":
-                        self.var_y.set(f"Y: {value}")
-                        self.data_points["Y"].append(float(value))
-                    elif key == "Z":
-                        self.var_z.set(f"Z: {value}")
-                        self.data_points["Z"].append(float(value))
-            elif tag == "RPS":
-                self.var_rps.set(f"RPS: {data}")
-                self.data_points["RPS"].append(float(data))
-            elif tag == "ENCSIN":
-                self.var_encsin.set(f"ENCSIN: {data}")
-                self.data_points["ENCSIN"].append(float(data))
+                        # Verifique o tamanho da mensagem
+                        _, _, payload_size = struct.unpack("BBB", self.buffer[:3])
+                        message_length = 3 + payload_size + 2
 
-    def update_plot(self):
-        """Atualiza o gráfico em tempo real."""
-        while self.running:
-            selected = self.selected_data.get()
-            if selected in self.data_points and len(self.data_points[selected]) > 0:
-                self.ax.clear()
-                self.ax.plot(self.data_points[selected][-50:], label=selected)  # Mostra os últimos 50 pontos
-                self.ax.set_title("Gráfico em Tempo Real")
-                self.ax.set_xlabel("Amostras")
-                self.ax.set_ylabel("Valor")
-                self.ax.legend()
-                self.canvas.draw()
-            time.sleep(1)
+                        if len(self.buffer) < message_length:
+                            break  # Aguardando mais dados
 
-    def send_command(self, command):
-        """Envia comandos ao ESP32."""
-        if self.esp and self.esp.is_open:
-            self.esp.write((command + "\n").encode())
-            if command == "START":
-                self.update_status("Transmitindo...", "primary")
-            elif command == "STOP":
-                self.update_status("Conectado", "success")
-        else:
-            ttk.Messagebox.show_error("Erro", "Conexão não estabelecida.")
+                        # Extraia e processe a mensagem completa
+                        message = self.buffer[:message_length]
+                        self.buffer = self.buffer[message_length:]  # Remova a mensagem do buffer
 
+                        decoded = decode_message(message)
+                        if decoded:
+                            self.update_fields(decoded)
+            except Exception as e:
+                print(f"Erro na leitura serial: {e}")
 
-# Inicializa a interface gráfica
-root = ttk.Window(themename="superhero")
-app = SerialApp(root)
-root.mainloop()
+    def update_fields(self, message):
+        identifier = message["identifier"]
+        payload = message["payload"]
+
+        if identifier == ID_ACC:  # Accel
+            accel_x, accel_y, accel_z = struct.unpack("<fff", payload)
+            self.labels["Accel X"].config(text=f"{accel_x:.2f}")
+            self.labels["Accel Y"].config(text=f"{accel_y:.2f}")
+            self.labels["Accel Z"].config(text=f"{accel_z:.2f}")
+        elif identifier == ID_RPS:  # RPS
+            rps = struct.unpack("<H", payload)[0]
+            self.labels["RPS"].config(text=f"{rps}")
+        elif identifier == ID_ENC:  # ENC
+            enc = struct.unpack("<H", payload)[0]
+            self.labels["ENC"].config(text=f"{enc}")
+
+if __name__ == "__main__":
+    app = SerialApp()
+    app.mainloop()
