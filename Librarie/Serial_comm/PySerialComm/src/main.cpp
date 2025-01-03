@@ -1,56 +1,69 @@
 #include <Arduino.h>
 #include "SerialProtocol.h"
-#include <stdlib.h> // Para geração de números aleatórios
 
-// Buffer para envio e recepção
-uint8_t send_buffer[256];
-uint8_t receive_buffer[256];
+#define MAX_BUFFER_SIZE 256
+uint8_t buffer[MAX_BUFFER_SIZE];
 
-void generate_random_data(float *data, int size) {
-    for (int i = 0; i < size; i++) {
-        data[i] = random(0, 1000) / 100.0; // Gera números float aleatórios entre 0.00 e 10.00
+// Estados
+bool is_sending = false;
+
+void setup() {
+    Serial.begin(115200); // Inicializa a comunicação serial
+    randomSeed(analogRead(0)); // Configura a semente para números aleatórios
+}
+
+void send_data(uint8_t prefix, uint8_t identifier, const void *payload, uint8_t payload_size) {
+    int message_length = encapsulate_message(prefix, identifier, payload, payload_size, buffer);
+    if (message_length > 0) {
+        Serial.write(buffer, message_length);
     }
 }
 
-void setup() {
-    Serial.begin(115200); // Inicializa o monitor serial
-    Serial.println("Iniciando geração de mensagens...");
+void process_command(const uint8_t *buffer, uint8_t buffer_size) {
+    Message msg;
+    if (decode_message(buffer, buffer_size, &msg)) {
+        if (msg.identifier == ID_CON) {
+            if (strncmp((char *)msg.payload, "start", msg.payload_size) == 0) {
+                is_sending = true;
+                Serial.println("Iniciando envio de dados.");
+            } else if (strncmp((char *)msg.payload, "stop", msg.payload_size) == 0) {
+                is_sending = false;
+                Serial.println("Parando envio de dados.");
+            }
+        }
+    }
 }
 
 void loop() {
-    // Gera dados aleatórios
-    float random_data[3];
-    generate_random_data(random_data, 3);
-
-    // Encapsula a mensagem com os dados gerados
-    int message_size = encapsulate_message(PREFIX_DATA, ID_ACC, random_data, sizeof(random_data), send_buffer);
-
-    if (message_size > 0) {
-        // Exibe a mensagem encapsulada no formato hexadecimal
-        Serial.print("Mensagem Encapsulada (HEX): ");
-        for (int i = 0; i < message_size; i++) {
-            Serial.printf("%02X ", send_buffer[i]);
-        }
-        Serial.println();
-
-        // Decodifica a mensagem para simular a recepção
-        Message msg;
-        if (decode_message(send_buffer, message_size, &msg)) {
-            Serial.println("Mensagem Decodificada:");
-            Serial.printf("Prefixo: 0x%02X, Identificador: 0x%02X, Tamanho do Payload: %d\n",
-                          msg.prefix, msg.identifier, msg.payload_size);
-
-            // Exibe o payload decodificado
-            float *decoded_data = (float *)msg.payload;
-            for (int i = 0; i < msg.payload_size / sizeof(float); i++) {
-                Serial.printf("Valor %d: %.2f\n", i + 1, decoded_data[i]);
-            }
-        } else {
-            Serial.println("Erro ao decodificar a mensagem.");
-        }
-    } else {
-        Serial.println("Erro ao encapsular a mensagem.");
+    // Processa comandos recebidos
+    if (Serial.available()) {
+        uint8_t received_buffer[MAX_BUFFER_SIZE];
+        int bytes_read = Serial.readBytes(received_buffer, sizeof(received_buffer));
+        process_command(received_buffer, bytes_read);
     }
 
-    delay(1000); // Aguarda 1 segundo antes de gerar outra mensagem
+    // Envia dados apenas se o envio estiver ativo
+    if (is_sending) {
+        float accel_x = random(-100, 100) / 10.0;
+        float accel_y = random(-100, 100) / 10.0;
+        float accel_z = random(-100, 100) / 10.0;
+        uint16_t rps = random(0, 1000);
+        uint16_t enc = random(0, 500);
+
+        uint8_t payload_acc[12];
+        memcpy(payload_acc, &accel_x, sizeof(float));
+        memcpy(payload_acc + 4, &accel_y, sizeof(float));
+        memcpy(payload_acc + 8, &accel_z, sizeof(float));
+        send_data(PREFIX_DATA, ID_ACC, payload_acc, sizeof(payload_acc));
+
+        uint8_t payload_rps[2];
+        memcpy(payload_rps, &rps, sizeof(uint16_t));
+        send_data(PREFIX_DATA, ID_RPS, payload_rps, sizeof(payload_rps));
+
+        uint8_t payload_enc[2];
+        memcpy(payload_enc, &enc, sizeof(uint16_t));
+        send_data(PREFIX_DATA, ID_ENC, payload_enc, sizeof(payload_enc));
+
+        delay(1000); // Envia os dados a cada 1 segundo
+    }
 }

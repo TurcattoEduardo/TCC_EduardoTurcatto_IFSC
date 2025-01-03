@@ -6,6 +6,8 @@ import threading
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 from collections import deque
+from tkinter import filedialog
+
 
 # Constantes definidas no protocolo
 PREFIX_DATA = 0x01
@@ -52,25 +54,14 @@ def decode_message(buffer):
     except Exception as e:
         return None
 
-import tkinter as tk
-from tkinter import ttk, messagebox
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import matplotlib.pyplot as plt
-from collections import deque
 
-# Classe principal do GUI
 class SerialApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Laboratório - GUI de Comunicação Serial")
         self.geometry("1000x600")
 
-        # Inicia em tela cheia
-        self.attributes('-fullscreen', True)
-
-        # Permite sair da tela cheia com Esc
-        self.bind('<Escape>', self.exit_fullscreen)
-
+        # Inicialização de atributos
         self.serial_connection = None
         self.running = False
         self.buffer = b""
@@ -80,93 +71,109 @@ class SerialApp(tk.Tk):
         self.current_plot = "Accel X"
         self.status_text = tk.StringVar(value="Desconectado")
 
-        self.create_widgets()
+        # Criação das abas
+        self.create_tabs()
 
-    def exit_fullscreen(self, event=None):
-        self.attributes('-fullscreen', False)
+    def create_tabs(self):
+        """Cria as abas do programa."""
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill=tk.BOTH, expand=True)
 
-    def create_widgets(self):
-        # PanedWindow para divisão ajustável
-        paned_window = tk.PanedWindow(self, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        # Aba Principal
+        self.main_frame = tk.Frame(notebook)
+        notebook.add(self.main_frame, text="Principal")
+        self.create_main_panel(self.main_frame)
+
+        # Aba Experimentos
+        self.experiments_frame = tk.Frame(notebook)
+        notebook.add(self.experiments_frame, text="Experimentos")
+        self.create_experiments_panel(self.experiments_frame)
+
+        # Aba Controle
+        self.control_frame = tk.Frame(notebook)
+        notebook.add(self.control_frame, text="Controle")
+        self.create_control_panel(self.control_frame)
+
+    def create_experiments_panel(self, parent):
+        """Cria a aba de Experimentos."""
+        label = tk.Label(parent, text="Seção de Experimentos (em desenvolvimento)", font=("Arial", 16))
+        label.pack(pady=20)
+
+    def create_control_panel(self, parent):
+        """Cria a aba de Controle."""
+        label = tk.Label(parent, text="Seção de Controle (em desenvolvimento)", font=("Arial", 16))
+        label.pack(pady=20)
+
+    def create_main_panel(self, parent):
+        """Cria a aba principal."""
+        paned_window = tk.PanedWindow(parent, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, bg="#D9D9D9")
         paned_window.pack(fill=tk.BOTH, expand=True)
 
-        # Frames para as metades ajustáveis
-        self.left_frame = tk.Frame(paned_window, width=50, height=600, bg="#F5F5F5")
-        self.right_frame = tk.Frame(paned_window, width=950, height=600)
-
+        self.left_frame = tk.Frame(paned_window, width=400, height=600, bg="#F5F5F5", relief=tk.SUNKEN, bd=2)
+        self.right_frame = tk.Frame(paned_window, width=600, height=600, relief=tk.SUNKEN, bd=2)
         paned_window.add(self.left_frame)
         paned_window.add(self.right_frame)
 
-        # Parte Esquerda: Configuração e Dados
         self.create_left_panel()
-
-        # Parte Direita: Gráfico e Ações
         self.create_right_panel()
 
     def create_left_panel(self):
+        """Cria o painel esquerdo na aba Principal."""
+        header = tk.Label(self.left_frame, text="Configurações", font=("Arial", 14, "bold"), bg="#F5F5F5")
+        header.pack(fill=tk.X, padx=10, pady=10)
+
         # Configurações de Conexão
-        config_frame = tk.LabelFrame(self.left_frame, text="Configurações de Conexão", bg="#F5F5F5")
+        config_frame = tk.LabelFrame(self.left_frame, text="Configurações de Conexão", bg="#F5F5F5", fg="#333", font=("Arial", 12))
         config_frame.pack(fill=tk.X, padx=10, pady=10)
 
-        self.port_label = tk.Label(config_frame, text="Porta Serial:", bg="#F5F5F5")
+        self.port_label = tk.Label(config_frame, text="Porta Serial:", bg="#F5F5F5", font=("Arial", 10))
         self.port_label.pack(anchor="w", padx=10, pady=5)
         self.port_combobox = ttk.Combobox(config_frame, values=["COM3", "COM4", "COM5"], width=20)
         self.port_combobox.pack(padx=10, pady=5)
 
-        self.connect_button = tk.Button(config_frame, text="Conectar", command=self.connect_serial)
+        self.connect_button = tk.Button(config_frame, text="Conectar", command=self.connect_serial, bg="#4CAF50", fg="white", font=("Arial", 10, "bold"))
         self.connect_button.pack(padx=10, pady=5)
 
-        self.disconnect_button = tk.Button(config_frame, text="Desconectar", command=self.disconnect_serial, state=tk.DISABLED)
+        self.disconnect_button = tk.Button(config_frame, text="Desconectar", command=self.disconnect_serial, state=tk.DISABLED, bg="#F44336", fg="white", font=("Arial", 10, "bold"))
         self.disconnect_button.pack(padx=10, pady=5)
 
-        self.status_label = tk.Label(config_frame, textvariable=self.status_text, fg="blue", bg="#F5F5F5")
+        self.status_label = tk.Label(config_frame, textvariable=self.status_text, fg="#007BFF", bg="#F5F5F5", font=("Arial", 10))
         self.status_label.pack(padx=10, pady=5)
 
         # Controle de Dados
-        control_frame = tk.LabelFrame(self.left_frame, text="Controle de Dados", bg="#F5F5F5")
+        control_frame = tk.LabelFrame(self.left_frame, text="Controle de Dados", bg="#F5F5F5", fg="#333", font=("Arial", 12))
         control_frame.pack(fill=tk.X, padx=10, pady=10)
 
-        self.start_button = tk.Button(control_frame, text="Iniciar", command=self.send_start_command)
+        self.start_button = tk.Button(control_frame, text="Iniciar", command=self.send_start_command, bg="#4CAF50", fg="white", font=("Arial", 10, "bold"))
         self.start_button.pack(padx=10, pady=5)
 
-        self.stop_button = tk.Button(control_frame, text="Parar", command=self.send_stop_command)
+        self.stop_button = tk.Button(control_frame, text="Parar", command=self.send_stop_command, bg="#F44336", fg="white", font=("Arial", 10, "bold"))
         self.stop_button.pack(padx=10, pady=5)
 
         # Exibição de Dados
-        data_frame = tk.LabelFrame(self.left_frame, text="Valores Recebidos", bg="#F5F5F5")
+        data_frame = tk.LabelFrame(self.left_frame, text="Valores Recebidos", bg="#F5F5F5", fg="#333", font=("Arial", 12))
         data_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         self.labels = {}
         for name in ["Accel X", "Accel Y", "Accel Z", "RPS", "ENC"]:
             frame = tk.Frame(data_frame, bg="#F5F5F5")
             frame.pack(anchor="w", padx=10, pady=2)
-            label = tk.Label(frame, text=f"{name}:", bg="#F5F5F5")
+            label = tk.Label(frame, text=f"{name}:", bg="#F5F5F5", font=("Arial", 10))
             label.pack(side=tk.LEFT)
-            self.labels[name] = tk.Label(frame, text="N/A", bg="#F5F5F5", width=10, anchor="e")
+            self.labels[name] = tk.Label(frame, text="N/A", bg="#F5F5F5", font=("Arial", 10), width=10, anchor="e")
             self.labels[name].pack(side=tk.RIGHT)
 
         # Logs
-        log_frame = tk.LabelFrame(self.left_frame, text="Logs", bg="#F5F5F5")
+        log_frame = tk.LabelFrame(self.left_frame, text="Logs", bg="#F5F5F5", fg="#333", font=("Arial", 12))
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        self.log_text = tk.Text(log_frame, height=10, bg="#FFFFFF", state=tk.DISABLED)
+        self.log_text = tk.Text(log_frame, height=10, bg="#FFFFFF", font=("Courier", 10), state=tk.DISABLED)
         self.log_text.pack(fill=tk.X, padx=5, pady=5)
-
-        # Botão de Fechar no Final
-        close_frame = tk.Frame(self.left_frame, bg="#F5F5F5")
-        close_frame.pack(fill=tk.X, padx=10, pady=10)
-
-        self.close_button = tk.Button(close_frame, text="Fechar", command=self.close_program)
-        self.close_button.pack(padx=10, pady=5)
-
-    def close_program(self):
-        """Fecha o programa."""
-        self.destroy()
 
 
     def create_right_panel(self):
-        # Organização do painel de controle do gráfico
-        graph_control_frame = tk.LabelFrame(self.right_frame, text="Configuração do Gráfico")
+        """Cria o painel direito na aba Principal."""
+        graph_control_frame = tk.LabelFrame(self.right_frame, text="Configuração do Gráfico", bg="#F5F5F5", fg="#333", font=("Arial", 12))
         graph_control_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
 
         self.plot_select = ttk.Combobox(graph_control_frame, values=["Accel X", "Accel Y", "Accel Z", "RPS", "ENC"], state="readonly")
@@ -174,14 +181,16 @@ class SerialApp(tk.Tk):
         self.plot_select.pack(side=tk.LEFT, padx=5)
         self.plot_select.bind("<<ComboboxSelected>>", self.update_plot)
 
-        self.clear_button = tk.Button(graph_control_frame, text="Limpar Gráfico Selecionado", command=self.clear_current_plot)
+        self.clear_button = tk.Button(graph_control_frame, text="Limpar Gráfico Selecionado", command=self.clear_current_plot, bg="#FF9800", fg="white", font=("Arial", 10, "bold"))
         self.clear_button.pack(side=tk.LEFT, padx=5)
 
-        self.clear_all_button = tk.Button(graph_control_frame, text="Limpar Todos os Gráficos", command=self.clear_all_plots)
+        self.clear_all_button = tk.Button(graph_control_frame, text="Limpar Todos os Gráficos", command=self.clear_all_plots, bg="#FF9800", fg="white", font=("Arial", 10, "bold"))
         self.clear_all_button.pack(side=tk.LEFT, padx=5)
 
-        # Adicionando o gráfico
-        graph_frame = tk.LabelFrame(self.right_frame, text="Gráfico")
+        self.export_button = tk.Button(graph_control_frame, text="Exportar Gráfico", command=self.export_graph, bg="#4CAF50", fg="white", font=("Arial", 10, "bold"))
+        self.export_button.pack(side=tk.LEFT, padx=5)
+
+        graph_frame = tk.LabelFrame(self.right_frame, text="Gráfico", bg="#F5F5F5", fg="#333", font=("Arial", 12))
         graph_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         self.figure, self.ax = plt.subplots()
@@ -194,6 +203,23 @@ class SerialApp(tk.Tk):
         self.canvas = FigureCanvasTkAgg(self.figure, graph_frame)
         self.canvas_widget = self.canvas.get_tk_widget()
         self.canvas_widget.pack(fill=tk.BOTH, expand=True)
+
+    def export_graph(self):
+        """Exporta o gráfico atual como uma imagem."""
+        # Abre uma janela para salvar o arquivo
+        filetypes = [("PNG Image", "*.png"), ("JPEG Image", "*.jpg"), ("All Files", "*.*")]
+        filepath = filedialog.asksaveasfilename(defaultextension=".png", filetypes=filetypes)
+
+        if filepath:
+            try:
+                self.figure.savefig(filepath, dpi=300)  # Salva o gráfico
+                messagebox.showinfo("Sucesso", f"Gráfico salvo em:\n{filepath}")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Erro ao salvar o gráfico:\n{e}")
+
+    def close_program(self):
+        """Fecha o programa."""
+        self.destroy()
 
     def update_plot(self, event=None):
         """Atualiza o gráfico quando o dado selecionado muda."""
